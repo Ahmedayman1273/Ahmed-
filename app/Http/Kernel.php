@@ -10,6 +10,7 @@ class Kernel extends HttpKernel
      * Global middleware
      */
     protected $middleware = [
+        \App\Http\Middleware\FrameOptionsHeader::class,
         \App\Http\Middleware\TrustProxies::class,
         \Illuminate\Http\Middleware\HandleCors::class,
         \App\Http\Middleware\PreventRequestsDuringMaintenance::class,

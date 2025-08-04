@@ -8,32 +8,33 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use App\Models\User;
 use App\Notifications\NewsOrEventCreated;
+use App\Libraries\ImageValidator;
 
 
 class NewsController extends Controller
 {
     // Helper to convert image path to full URL
-  private function getImageUrl($path)
+    private function getImageUrl($path)
     {
         return $path ? config('app.url') . '/storage/' . ltrim($path, '/') : null;
     }
 
     // Format single news item
- private function formatNews($news)
-   {
-        return [
+    private function formatNews($news)
+    {
+
+
+         return [
             'id'        => $news->id,
             'title'     => $news->title,
             'content'   => $news->content,
             'created_at'=> $news->created_at,
             'image'     => $this->getImageUrl($news->image),
-        ];
-   }
+         ];
+    }
 
-
- // Get all news items
-
- public function index()
+    // Get all news items
+    public function index()
     {
         $user = auth()->user();
 
@@ -50,8 +51,8 @@ class NewsController extends Controller
         return response()->json($formatted);
     }
 
- // Show single news item by ID
- public function show($id)
+    // Show single news item by ID
+    public function show($id)
     {
         $user = auth()->user();
 
@@ -75,125 +76,148 @@ class NewsController extends Controller
     }
 
     // Create news item (admin only)
-   public function store(Request $request)
-{
-    $user = auth()->user();
+    public function store(Request $request)
+    {
+        $user = auth()->user();
 
-    if (!$user || $user->type !== 'admin') {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Forbidden. Admins only.'
-        ], 403);
+        if (!$user || $user->type !== 'admin') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Forbidden. Admins only.'
+            ], 403);
+        }
+
+        // Validate image via ImageValidator class
+        $validator = ImageValidator::validate($request, 'image');
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        // Check real MIME type
+        if ($request->hasFile('image')) {
+            $mime = $request->file('image')->getMimeType();
+            if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'])) {
+                return response()->json(['error' => 'Invalid image type detected after upload'], 400);
+            }
+        }
+
+        $request->validate([
+            'title'   => 'required|string|max:255',
+            'content' => 'required|string',
+        ]);
+
+        $imagePath = $request->hasFile('image')
+            ? $request->file('image')->store('news', 'public')
+            : null;
+
+        $news = News::create([
+            'title'   => $request->title,
+            'content' => $request->content,
+            'image'   => $imagePath,
+        ]);
+
+        // إرسال إشعارات للمستخدمين
+        $targets = User::whereIn('type', ['student', 'graduate'])->get();
+
+        foreach ($targets as $target) {
+            $target->notify(new NewsOrEventCreated([
+                'title' => 'News Update',
+                'message' => "A news item titled '{$news->title}' has been published.",
+            ]));
+        }
+
+        return response()->json($this->formatNews($news), 201);
     }
-
-    $request->validate([
-        'title'   => 'required|string|max:255',
-        'content' => 'required|string',
-        'image'   => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
-    ]);
-
-    $imagePath = $request->hasFile('image')
-        ? $request->file('image')->store('news', 'public')
-        : null;
-
-    $news = News::create([
-        'title'   => $request->title,
-        'content' => $request->content,
-        'image'   => $imagePath,
-    ]);
-
-    // إرسال إشعارات للمستخدمين
-    $targets = User::whereIn('type', ['student', 'graduate'])->get();
-
-    foreach ($targets as $target) {
-        $target->notify(new NewsOrEventCreated([
-            'title' => 'News Update',
-            'message' => "A news item titled '{$news->title}' has been published.",
-        ]));
-    }
-
-    return response()->json($this->formatNews($news), 201);
-}
 
     // Update news item (admin only)
-   public function update(Request $request, $id)
-{
-    $user = auth()->user();
+    public function update(Request $request, $id)
+    {
+        $user = auth()->user();
 
-    if (!$user || $user->type !== 'admin') {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'Forbidden. Admins only.'
-        ], 403);
-    }
-
-    $news = News::find($id);
-    if (!$news) {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'News not found.'
-        ], 404);
-    }
-
-    $request->validate([
-        'title'   => 'sometimes|required|string|max:255',
-        'content' => 'sometimes|required|string',
-        'image'   => 'nullable|image|mimes:jpeg,png,jpg,gif,svg|max:2048',
-    ]);
-
-    if ($request->hasFile('image')) {
-        if ($news->image) {
-            Storage::disk('public')->delete($news->image);
+        if (!$user || $user->type !== 'admin') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Forbidden. Admins only.'
+            ], 403);
         }
-        $news->image = $request->file('image')->store('news', 'public');
+
+        $news = News::find($id);
+        if (!$news) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'News not found.'
+            ], 404);
+        }
+
+        $request->validate([
+            'title'   => 'sometimes|required|string|max:255',
+            'content' => 'sometimes|required|string',
+        ]);
+
+        if ($request->hasFile('image')) {
+            // Validate via ImageValidator class
+            $validator = ImageValidator::validate($request, 'image');
+            if ($validator->fails()) {
+                return response()->json(['errors' => $validator->errors()], 422);
+            }
+
+            // Check real MIME type
+            $mime = $request->file('image')->getMimeType();
+            if (!in_array($mime, ['image/jpeg', 'image/png', 'image/webp', 'image/gif'])) {
+                return response()->json(['error' => 'Invalid image type detected after upload'], 400);
+            }
+
+            if ($news->image) {
+                Storage::disk('public')->delete($news->image);
+            }
+
+            $news->image = $request->file('image')->store('news', 'public');
+        }
+
+        if ($request->has('title')) {
+            $news->title = $request->title;
+        }
+
+        if ($request->has('content')) {
+            $news->content = $request->content;
+        }
+
+        $news->save();
+
+        return response()->json($this->formatNews($news));
     }
-
-    if ($request->has('title')) {
-        $news->title = $request->title;
-    }
-
-    if ($request->has('content')) {
-        $news->content = $request->content;
-    }
-
-    $news->save();
-
-    return response()->json($this->formatNews($news));
-}
-
 
     // Delete news item (admin only)
     public function destroy($id)
-{
-    $user = auth()->user();
+    {
+        $user = auth()->user();
 
-    if (!$user || $user->type !== 'admin') {
+        if (!$user || $user->type !== 'admin') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Forbidden. Admins only.'
+            ], 403);
+        }
+
+        $news = News::find($id);
+        if (!$news) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'News not found.'
+            ], 404);
+        }
+
+        if ($news->image) {
+            Storage::disk('public')->delete($news->image);
+        }
+
+        $news->delete();
+
+        $newsList = News::latest()->get()->map(fn($item) => $this->formatNews($item));
+
         return response()->json([
-            'status' => 'error',
-            'message' => 'Forbidden. Admins only.'
-        ], 403);
+            'message' => 'News deleted',
+            'news'    => $newsList
+        ]);
     }
-
-    $news = News::find($id);
-    if (!$news) {
-        return response()->json([
-            'status' => 'error',
-            'message' => 'News not found.'
-        ], 404);
-    }
-
-    if ($news->image) {
-        Storage::disk('public')->delete($news->image);
-    }
-
-    $news->delete();
-
-    $newsList = News::latest()->get()->map(fn($item) => $this->formatNews($item));
-
-    return response()->json([
-        'message' => 'News deleted',
-        'news'    => $newsList
-    ]);
-}
-
 }
